@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 
 TELEGRAM_TOKEN = os.getenv("TOKEN", "").strip()
-META_AI_KEY = os.getenv("META_AI_API_KEY", "").strip()
+META_AI_KEY = os.getenv("META_AI_API_KEY", "nxt_3a454c41e6a84aeead28d1fb4aec87a4").strip()
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 META_AI_GEM_ID = "ba0fbe0d-976e-493a-afdb-6d8469e53df0"
 META_AI_ENDPOINT = f"https://nxtai.zipohostbd.workers.dev/api/use?gem={META_AI_GEM_ID}"
@@ -54,34 +54,13 @@ class Platform:
     domains: tuple[str, ...]
 
 
-
 TIKTOK = Platform(
     "tiktok",
     "TikTok",
-    "🎵",
+    "▶",
     ("tiktok.com", "m.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"),
 )
-FACEBOOK = Platform(
-    "facebook",
-    "Facebook",
-    "🔵",
-    ("facebook.com", "fb.watch", "m.facebook.com", "www.facebook.com"),
-)
-INSTAGRAM = Platform(
-    "instagram",
-    "Instagram",
-    "📸",
-    ("instagram.com", "www.instagram.com"),
-)
-YOUTUBE = Platform(
-    "youtube",
-    "YouTube",
-    "▶️",
-    ("youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"),
-)
-PLATFORM_BY_KEY = {
-    p.key: p for p in (TIKTOK, FACEBOOK, INSTAGRAM, YOUTUBE)
-}
+PLATFORM_BY_KEY = {TIKTOK.key: TIKTOK}
 
 CHAT_MODES: dict[int, str] = {}
 CHAT_PLATFORMS: dict[int, str] = {}
@@ -181,7 +160,6 @@ def json_request(
         payload=body,
         headers=request_headers,
         timeout=timeout,
-        max_bytes=4 * 1024 * 1024,
     )
     try:
         return json.loads(raw.decode("utf-8", errors="replace"))
@@ -222,21 +200,25 @@ def telegram_upload(
     boundary = f"----Streamly{uuid.uuid4().hex}"
     parts: list[bytes] = []
     for key, value in fields.items():
-        parts.extend([
+        parts.extend(
+            [
+                f"--{boundary}\r\n".encode(),
+                f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
+                str(value).encode(),
+                b"\r\n",
+            ]
+        )
+    parts.extend(
+        [
             f"--{boundary}\r\n".encode(),
-            f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode(),
-            str(value).encode(),
+            f'Content-Disposition: form-data; name="{field_name}"; '
+            f'filename="{file_name}"\r\n'.encode(),
+            b"Content-Type: application/octet-stream\r\n\r\n",
+            file_bytes,
             b"\r\n",
-        ])
-    parts.extend([
-        f"--{boundary}\r\n".encode(),
-        f'Content-Disposition: form-data; name="{field_name}"; '
-        f'filename="{file_name}"\r\n'.encode(),
-        b"Content-Type: application/octet-stream\r\n\r\n",
-        file_bytes,
-        b"\r\n",
-        f"--{boundary}--\r\n".encode(),
-    ])
+            f"--{boundary}--\r\n".encode(),
+        ]
+    )
     _, _, raw = http_request(
         f"{TELEGRAM_API}/{method}",
         method="POST",
@@ -288,48 +270,65 @@ def inline_keyboard(rows: list[list[dict[str, str]]]) -> str:
 
 
 def main_keyboard() -> str:
-    return inline_keyboard([
+    return inline_keyboard(
         [
-            {"text": "⬇️ Video Downloader", "callback_data": "mode:download"},
-            {"text": "🤖 AI assistant", "callback_data": "mode:ai"},
-        ],
-        [
-            {"text": "ℹ️ How it works", "callback_data": "help"},
-            {"text": "✖️ Cancel", "callback_data": "cancel"},
-        ],
-    ])
+            [
+                {"text": "⬇️ Download TikTok", "callback_data": "mode:download", "style": "primary"},
+                {"text": "🤖 AI assistant", "callback_data": "mode:ai", "style": "primary"},
+            ],
+            [
+                {"text": "ℹ️ How it works", "callback_data": "help", "style": "primary"},
+                {"text": "✖️ Cancel", "callback_data": "cancel", "style": "danger"},
+            ],
+        ]
+    )
 
 
 def platform_keyboard() -> str:
-    return inline_keyboard([
+    """Show the platforms currently supported by the downloader."""
+    return inline_keyboard(
         [
-            {"text": "🎵 TikTok", "callback_data": "platform:tiktok"},
-            {"text": "🔵 Facebook", "callback_data": "platform:facebook"},
-        ],
-        [
-            {"text": "📸 Instagram", "callback_data": "platform:instagram"},
-            {"text": "▶️ YouTube", "callback_data": "platform:youtube"},
-        ],
-        [{"text": "↩️ Back to menu", "callback_data": "home"}],
-        [{"text": "✖️ Cancel", "callback_data": "cancel"}],
-    ])
+            [{"text": "🎵 TikTok", "callback_data": "platform:tiktok", "style": "primary"}],
+            [{"text": "↩️ Back to menu", "callback_data": "home", "style": "primary"}],
+            [{"text": "✖️ Cancel", "callback_data": "cancel", "style": "danger"}],
+        ]
+    )
 
 
 def quality_keyboard(options: list[dict[str, Any]]) -> str:
     rows: list[list[dict[str, str]]] = []
-    for index, option in enumerate(options[:8]):
+    for index, option in enumerate(options[:6]):
         size = option.get("size")
         suffix = f" · {format_bytes(size)}" if size else ""
-        rows.append([{
-            "text": f"🎚️ {option['label']}{suffix}",
-            "callback_data": f"quality:{index}",
-        }])
-    rows.extend([
-        [{"text": "🔁 Download another", "callback_data": "mode:download"}],
-        [{"text": "✖️ Cancel", "callback_data": "cancel"}],
-    ])
+        rows.append(
+            [
+                {
+                    "text": f"🎚️ {option['label']}{suffix}",
+                    "callback_data": f"quality:{index}",
+                    "style": "primary",
+                }
+            ]
+        )
+    rows.extend(
+        [
+            [{"text": "🔁 Download another", "callback_data": "mode:download", "style": "primary"}],
+            [{"text": "✖️ Cancel", "callback_data": "cancel", "style": "danger"}],
+        ]
+    )
     return inline_keyboard(rows)
 
+
+def format_keyboard() -> str:
+    return inline_keyboard(
+        [
+            [
+                {"text": "🎬 MP4 video", "callback_data": "format:mp4", "style": "success"},
+                {"text": "🎵 MP3 audio", "callback_data": "format:mp3", "style": "success"},
+            ],
+            [{"text": "↩️ Choose another quality", "callback_data": "back:quality", "style": "primary"}],
+            [{"text": "✖️ Cancel", "callback_data": "cancel", "style": "danger"}],
+        ]
+    )
 
 
 def progress_text(title: str, downloaded: int, total: int, stage: str) -> str:
@@ -365,64 +364,60 @@ def cleanup_state() -> None:
             CHAT_PLATFORMS.pop(chat_id, None)
 
 
-# ---------------------------------------------------------------------------
-# Multi-platform downloader
-# ---------------------------------------------------------------------------
-
-def _import_yt_dlp():
-    try:
-        import yt_dlp  # type: ignore
-        return yt_dlp
-    except ImportError as error:
-        raise RuntimeError(
-            "yt-dlp is not installed. Add yt-dlp to requirements.txt and redeploy."
-        ) from error
+def _remote_url(value: Any) -> str | None:
+    if isinstance(value, str) and value.startswith(("http://", "https://")):
+        return value
+    return None
 
 
-def _human_height(height: Any) -> int:
-    try:
-        return int(height or 0)
-    except (TypeError, ValueError):
-        return 0
+def _media_links(value: Any, key_hint: str = "") -> tuple[list[str], list[str]]:
+    """Collect likely video/audio URLs from TikWM or SnapTik JSON."""
+    videos: list[str] = []
+    audios: list[str] = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            hint = key.lower()
+            url = _remote_url(nested)
+            if url:
+                if any(word in hint for word in ("music", "audio", "mp3", "sound")):
+                    audios.append(url)
+                elif any(
+                    word in hint
+                    for word in ("play", "video", "mp4", "download", "hd", "url")
+                ) and not any(word in hint for word in ("cover", "avatar", "image", "thumb")):
+                    videos.append(url)
+            nested_videos, nested_audios = _media_links(nested, hint)
+            videos.extend(nested_videos)
+            audios.extend(nested_audios)
+    elif isinstance(value, list):
+        for nested in value:
+            nested_videos, nested_audios = _media_links(nested, key_hint)
+            videos.extend(nested_videos)
+            audios.extend(nested_audios)
+    return list(dict.fromkeys(videos)), list(dict.fromkeys(audios))
 
 
-def _option_label(height: int, ext: str, filesize: int) -> str:
-    if height >= 2160:
-        quality = "4K"
-    elif height >= 1440:
-        quality = "1440p"
-    elif height >= 1080:
-        quality = "1080p"
-    elif height >= 720:
-        quality = "720p"
-    elif height >= 480:
-        quality = "480p"
-    elif height >= 360:
-        quality = "360p"
-    elif height:
-        quality = f"{height}p"
-    else:
-        quality = "Best"
-    suffix = f" · {format_bytes(filesize)}" if filesize else ""
-    return f"{quality} {ext.upper()}{suffix}"
-
-
-
-def _tiktok_options(title: str, video_urls: list[str]) -> tuple[str, list[dict[str, Any]]]:
+def _tiktok_options(
+    title: str,
+    video_urls: list[str],
+    audio_urls: list[str],
+) -> tuple[str, list[dict[str, Any]]]:
     if not video_urls:
         raise RuntimeError("TikTok API did not return a downloadable video URL")
     options: list[dict[str, Any]] = []
     labels = ["HD quality", "Standard quality", "Auto quality"]
     for index, video_url in enumerate(video_urls[:3]):
-        options.append({
-            "format": video_url,
-            "url": video_url,
-            "height": 0,
-            "size": 0,
-            "ext": "mp4",
-            "label": labels[min(index, len(labels) - 1)],
-            "method": "direct",
-        })
+        options.append(
+            {
+                "format": video_url,
+                "url": video_url,
+                "audio_url": audio_urls[0] if audio_urls else "",
+                "height": 0,
+                "size": 0,
+                "ext": "mp4",
+                "label": labels[min(index, len(labels) - 1)],
+            }
+        )
     return title, options
 
 
@@ -432,18 +427,38 @@ def _resolve_tikwm(source_url: str) -> tuple[str, list[dict[str, Any]]]:
     if not isinstance(response, dict) or response.get("code") not in {0, "0", None}:
         message = response.get("msg") if isinstance(response, dict) else ""
         raise RuntimeError(str(message or "TikWM did not resolve this TikTok URL"))
-    data = response.get("data")
+    data = response.get("data") if isinstance(response, dict) else None
     if not isinstance(data, dict):
         raise RuntimeError("TikWM returned no media data")
     duration = int(data.get("duration") or 0)
     if duration > MAX_VIDEO_SECONDS:
-        raise RuntimeError(f"This video is {duration // 60} minutes long. The limit is {MAX_VIDEO_SECONDS // 60} minutes.")
+        raise RuntimeError(
+            f"This video is {duration // 60} minutes long. "
+            f"The free service limit is {MAX_VIDEO_SECONDS // 60} minutes."
+        )
     title = str(data.get("title") or "TikTok video")
-    preferred_video = [_remote_url(data.get(k)) for k in ("hdplay", "play", "wmplay") if _remote_url(data.get(k))]
-    video_urls, _ = _media_links(data)
+    video_urls, audio_urls = _media_links(data)
+    preferred_video = [
+        _remote_url(data.get(key))
+        for key in ("hdplay", "play", "wmplay")
+        if _remote_url(data.get(key))
+    ]
+    preferred_audio = [
+        _remote_url(data.get(key))
+        for key in ("music", "music_url", "mp3", "audio")
+        if _remote_url(data.get(key))
+    ]
     video_urls = list(dict.fromkeys(preferred_video + video_urls))
-    title, options = _tiktok_options(title, video_urls)
-    known_sizes = {data.get("hdplay"): data.get("hd_size"), data.get("play"): data.get("size"), data.get("wmplay"): data.get("wm_size")}
+    title, options = _tiktok_options(
+        title,
+        video_urls,
+        list(dict.fromkeys(preferred_audio + audio_urls)),
+    )
+    known_sizes = {
+        data.get("hdplay"): data.get("hd_size"),
+        data.get("play"): data.get("size"),
+        data.get("wmplay"): data.get("wm_size"),
+    }
     for option in options:
         try:
             option["size"] = int(known_sizes.get(option["url"]) or 0)
@@ -455,9 +470,15 @@ def _resolve_tikwm(source_url: str) -> tuple[str, list[dict[str, Any]]]:
 def _resolve_snaptik(source_url: str) -> tuple[str, list[dict[str, Any]]]:
     body = urlencode({"url": source_url}).encode()
     _, _, raw = http_request(
-        SNAPTIK_ENDPOINT, method="POST", payload=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Referer": "https://snaptik.app/"},
-        timeout=45, max_bytes=4 * 1024 * 1024,
+        SNAPTIK_ENDPOINT,
+        method="POST",
+        payload=body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Referer": "https://snaptik.app/",
+        },
+        timeout=45,
+        max_bytes=4 * 1024 * 1024,
     )
     try:
         response = json.loads(raw.decode("utf-8", errors="replace"))
@@ -465,320 +486,201 @@ def _resolve_snaptik(source_url: str) -> tuple[str, list[dict[str, Any]]]:
         raise RuntimeError("SnapTik returned invalid JSON") from error
     if isinstance(response, dict) and response.get("success") is False:
         raise RuntimeError("SnapTik could not resolve this TikTok URL")
-    video_urls, _ = _media_links(response)
+    video_urls, audio_urls = _media_links(response)
     title = "TikTok video"
     if isinstance(response, dict):
-        data = response.get("data")
-        if isinstance(data, dict):
-            title = str(response.get("title") or data.get("title") or title)
-        else:
-            title = str(response.get("title") or title)
-    return _tiktok_options(title, video_urls)
-
-
-def expand_tiktok_url(source_url: str) -> str:
-    # vt.tiktok.com / vm.tiktok.com are redirect links. The older API
-    # endpoints often reject the short URL, so resolve the redirect first.
-    parsed = urlparse(source_url)
-    host = (parsed.hostname or "").lower()
-    if host not in {"vt.tiktok.com", "vm.tiktok.com"}:
-        return source_url
-    request = Request(source_url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*"})
-    try:
-        with urlopen(request, timeout=20) as response:
-            final_url = response.geturl()
-            if final_url and "tiktok.com" in (urlparse(final_url).hostname or "").lower():
-                return final_url
-    except Exception as error:
-        log("TikTok short-link expansion failed: %s", error)
-    return source_url
+        title = str(response.get("title") or (response.get("data") or {}).get("title") or title)
+    return _tiktok_options(title, video_urls, audio_urls)
 
 
 def tiktok_info(source_url: str) -> tuple[str, list[dict[str, Any]]]:
-    source_url = expand_tiktok_url(source_url)
+    """Resolve public TikTok media through TikWM, then SnapTik as fallback."""
     errors: list[str] = []
     for resolver in (_resolve_tikwm, _resolve_snaptik):
         try:
             return resolver(source_url)
         except Exception as error:
             errors.append(str(error))
-    # Last fallback: current yt-dlp TikTok extractor. This still produces
-    # video-only output in the application; no audio-only mode exists.
-    try:
-        return _resolve_with_ytdlp(source_url, TIKTOK)
-    except Exception as error:
-        errors.append(str(error))
-    raise RuntimeError("TikTok video resolve করা যায়নি। TikTok APIs এবং yt-dlp—দুটোই এই URL resolve করতে পারেনি।")
-
-def _yt_dlp_options(source_url: str, format_selector: str | None = None) -> dict[str, Any]:
-    # Video-only product: never request or convert to an audio-only output.
-    # yt-dlp merges the best video + audio streams, then recodes only when
-    # necessary so the final file is always an MP4 video.
-    return {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "restrictfilenames": True,
-        "socket_timeout": 60,
-        "retries": 5,
-        "fragment_retries": 5,
-        "http_headers": {"User-Agent": USER_AGENT},
-        "js_runtimes": {"deno": {}},
-        "remote_components": {"ejs": "github"},
-        "format": format_selector or "bestvideo*+bestaudio/best",
-        "merge_output_format": "mp4",
-        "recodevideo": "mp4",
-    }
-
-def _format_heights(info: dict[str, Any]) -> list[int]:
-    heights: set[int] = set()
-    for fmt in info.get("formats") or []:
-        if not isinstance(fmt, dict):
-            continue
-        if fmt.get("vcodec") in (None, "none"):
-            continue
-        h = _human_height(fmt.get("height"))
-        if 144 <= h <= 2160:
-            heights.add(h)
-    # Present useful standard choices, mapped to the nearest available source.
-    wanted = [2160, 1440, 1080, 720, 480, 360, 240, 144]
-    return [h for h in wanted if any(x >= h for x in heights)]
+    raise RuntimeError("TikTok download APIs could not resolve this URL")
 
 
-def _resolve_with_ytdlp(source_url: str, platform: Platform) -> tuple[str, list[dict[str, Any]]]:
-    yt_dlp = _import_yt_dlp()
-    opts = _yt_dlp_options(source_url)
-    opts["skip_download"] = True
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(source_url, download=False)
-    except Exception as error:
-        message = str(error)
-        lower = message.lower()
-        if any(word in lower for word in ("private", "login", "sign in", "authentication", "members-only")):
+def download_tiktok(
+    source_url: str,
+    option: dict[str, Any],
+    output_format: str,
+    progress_callback: Callable[[int, int, str], None],
+) -> tuple[str, str, str]:
+    """Return the API's direct media URL without downloading it locally.
+
+    Telegram's Bot API accepts an HTTP URL for sendVideo/sendAudio and fetches
+    the file on Telegram's side. Keeping the media URL remote avoids a second
+    download to the bot server, avoids temporary files, and makes the API
+    resolver the only service that supplies the TikTok media.
+    """
+    if output_format not in {"mp4", "mp3"}:
+        raise RuntimeError("Unsupported output format")
+    media_url = _remote_url(option.get("audio_url" if output_format == "mp3" else "url"))
+    if not media_url:
+        raise RuntimeError(
+            "This TikTok API did not provide an audio URL."
+            if output_format == "mp3"
+            else "This TikTok API did not provide a video URL."
+        )
+    if output_format == "mp4":
+        try:
+            known_size = int(option.get("size") or 0)
+        except (TypeError, ValueError):
+            known_size = 0
+        if known_size > MAX_MEDIA_BYTES:
             raise RuntimeError(
-                "এই media public automated access-এর জন্য available নয়। "
-                "Private/login-only content bypass করা যাবে না।"
-            ) from error
-        raise RuntimeError(f"{platform.title} resolve করা যায়নি: {message[:450]}") from error
-
-    if not isinstance(info, dict):
-        raise RuntimeError("Downloader returned invalid media information.")
-    duration = int(info.get("duration") or 0)
-    if duration > MAX_VIDEO_SECONDS:
-        raise RuntimeError(
-            f"এই ভিডিওটি {duration // 60} মিনিটের বেশি। সর্বোচ্চ সীমা {MAX_VIDEO_SECONDS // 60} মিনিট।"
-        )
-    title = str(info.get("title") or f"{platform.title} video")
-    heights = _format_heights(info)
-    if not heights:
-        # Some extractors expose only a direct selected URL. Keep one safe fallback.
-        direct = info.get("url")
-        if isinstance(direct, str) and direct.startswith(("http://", "https://")):
-            return title, [{
-                "url": direct, "format": "best", "height": _human_height(info.get("height")),
-                "size": int(info.get("filesize") or 0), "ext": "mp4",
-                "label": "Auto quality", "title": title,
-                "selector": "best",
-            }]
-        raise RuntimeError("এই media-এর জন্য downloadable video format পাওয়া যায়নি।")
-
-    options: list[dict[str, Any]] = []
-    for h in heights[:8]:
-        options.append({
-            "format": f"height<={h}",
-            "selector": f"bestvideo*[height<={h}]+bestaudio/best[height<={h}]/best",
-            "url": "",
-            "height": h,
-            "size": 0,
-            "ext": "mp4",
-            "label": f"{_option_label(h, 'mp4', 0)}",
-            "title": title,
-            "method": "ytdlp",
-        })
-    return title, options
-
-def resolve_media(source_url: str, platform: Platform) -> tuple[str, list[dict[str, Any]]]:
-    # TikTok keeps the proven direct-API path. Other platforms use yt-dlp.
-    if platform.key == "tiktok":
-        return tiktok_info(source_url)
-    return _resolve_with_ytdlp(source_url, platform)
-
-
-def _download_bytes(url: str, max_bytes: int = MAX_MEDIA_BYTES) -> bytes:
-    request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
-    try:
-        with urlopen(request, timeout=120) as response:
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                chunk = response.read(256 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise RuntimeError(
-                        f"Downloaded file is larger than {format_bytes(max_bytes)}."
-                    )
-                chunks.append(chunk)
-            return b"".join(chunks)
-    except HTTPError as error:
-        raise RuntimeError(f"Media server returned HTTP {error.code}.") from error
-    except (URLError, TimeoutError) as error:
-        raise RuntimeError(f"Media could not be downloaded: {error}") from error
-
-
-def _upload_local_media(chat_id: int, title: str, path: str, caption: str) -> None:
-    size = os.path.getsize(path)
-    if size > MAX_MEDIA_BYTES:
-        raise RuntimeError(
-            f"ফাইলটি {format_bytes(size)}; Telegram limit-এর মধ্যে নেই। কম quality বেছে নিন।"
-        )
-    with open(path, "rb") as fh:
-        data = fh.read()
-    telegram_upload(
-        "sendVideo", "video", safe_filename(title, "mp4"), data,
-        {"chat_id": str(chat_id), "caption": caption, "supports_streaming": "true"},
-    )
-
-def _download_ytdlp_file(source_url: str, title: str, option: dict[str, Any], progress_callback: Callable[[int, int, str], None]) -> str:
-    import tempfile
-    yt_dlp = _import_yt_dlp()
-    tmp = tempfile.mkdtemp(prefix="streamly-")
-    outtmpl = os.path.join(tmp, "%(id)s.%(ext)s")
-    selector = str(option.get("selector") or "bestvideo*+bestaudio/best")
-    opts = _yt_dlp_options(source_url, selector)
-    opts.update({"outtmpl": outtmpl})
-
-    def hook(d: dict[str, Any]) -> None:
-        if d.get("status") == "downloading":
-            progress_callback(
-                int(d.get("downloaded_bytes") or 0),
-                int(d.get("total_bytes") or d.get("total_bytes_estimate") or 0),
-                "Video download হচ্ছে…",
+                f"The file is {format_bytes(known_size)}, above the "
+                f"{format_bytes(MAX_MEDIA_BYTES)} Telegram limit."
             )
-        elif d.get("status") == "finished":
-            progress_callback(
-                int(d.get("downloaded_bytes") or 0),
-                int(d.get("total_bytes") or 0),
-                "Video MP4 করা হচ্ছে…",
-            )
-    opts["progress_hooks"] = [hook]
+    progress_callback(0, 0, "Telegram server-এ media পাঠানো হচ্ছে…")
+    title = str(option.get("title") or "TikTok media")
+    extension = "mp3" if output_format == "mp3" else "mp4"
+    return media_url, title, extension
 
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([source_url])
-        files = [
-            os.path.join(tmp, name) for name in os.listdir(tmp)
-            if os.path.isfile(os.path.join(tmp, name))
-        ]
-        mp4 = [p for p in files if p.lower().endswith(".mp4")]
-        if not mp4:
-            raise RuntimeError("Downloader কোনো MP4 video তৈরি করেনি।")
-        return max(mp4, key=os.path.getsize)
-    except Exception:
-        import shutil
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise
+
+def safe_filename(title: str, extension: str) -> str:
+    clean = re.sub(r"[^\w\s.-]", "", title, flags=re.UNICODE).strip()
+    clean = re.sub(r"\s+", " ", clean)[:70] or "streamly-download"
+    return f"{clean}.{extension}"
+
 
 def send_download(chat_id: int, status_id: int, source_url: str, option: dict[str, Any]) -> None:
     last_update = 0.0
+
     def update(downloaded: int, total: int, stage: str) -> None:
         nonlocal last_update
         now = time.monotonic()
-        if now - last_update < 1.0 and downloaded != 0:
+        if stage == "Downloading…" and now - last_update < 1.2:
             return
         last_update = now
-        edit_message(chat_id, status_id, progress_text(str(option.get("title", "Video")), downloaded, total, stage))
+        edit_message(
+            chat_id,
+            status_id,
+            progress_text(str(option.get("title", "TikTok video")), downloaded, total, stage),
+        )
 
     try:
-        platform_key = str(option.get("platform") or "")
-        title = str(option.get("title") or "download")
-        caption = f"<b>{escape(title[:900])}</b>\n\n🎬 MP4 video"
-
-        if str(option.get("method") or "") == "direct":
-            media_url = _remote_url(option.get("url"))
-            if not media_url:
-                raise RuntimeError("TikTok selected video-এর media URL পাওয়া যায়নি।")
-            update(0, int(option.get("size") or 0), "Telegram-এ video পাঠানো হচ্ছে…")
-            try:
-                telegram_call("sendVideo", {"chat_id": str(chat_id), "video": media_url, "caption": caption, "supports_streaming": "true"})
-            except Exception:
-                data = _download_bytes(media_url)
-                if len(data) > MAX_MEDIA_BYTES:
-                    raise RuntimeError("TikTok video Telegram limit-এর চেয়ে বড়।")
-                update(len(data), len(data), "Telegram-এ video upload করা হচ্ছে…")
-                telegram_upload("sendVideo", "video", safe_filename(title, "mp4"), data, {"chat_id": str(chat_id), "caption": caption, "supports_streaming": "true"})
+        output_format = str(option["output_format"])
+        media_url, title, extension = download_tiktok(
+            source_url,
+            option,
+            output_format,
+            update,
+        )
+        caption = (
+            f"<b>{escape(title[:900])}</b>\n\n"
+            f"Downloaded as {output_format.upper()} by Streamly."
+        )
+        if output_format == "mp3":
+            telegram_call(
+                "sendAudio",
+                {
+                    "chat_id": str(chat_id),
+                    "audio": media_url,
+                    "caption": caption,
+                    "title": title[:200],
+                },
+            )
+        elif extension == "mp4":
+            telegram_call(
+                "sendVideo",
+                {
+                    "chat_id": str(chat_id),
+                    "video": media_url,
+                    "caption": caption,
+                    "supports_streaming": "true",
+                },
+            )
         else:
-            update(0, 0, "Video download শুরু হচ্ছে…")
-            path = _download_ytdlp_file(source_url, title, option, update)
-            try:
-                _upload_local_media(chat_id, title, path, caption)
-                update(os.path.getsize(path), os.path.getsize(path), "Telegram-এ video upload complete")
-            finally:
-                import shutil
-                shutil.rmtree(os.path.dirname(path), ignore_errors=True)
-
-        edit_message(chat_id, status_id, "<b>✅ Video download complete</b>\n\nআপনার MP4 video পাঠানো হয়েছে।", reply_markup=main_keyboard())
+            telegram_call(
+                "sendDocument",
+                {
+                    "chat_id": str(chat_id),
+                    "document": media_url,
+                    "caption": caption,
+                },
+            )
+        edit_message(
+            chat_id,
+            status_id,
+            "<b>Download complete</b>\n\nআপনার ফাইল পাঠানো হয়েছে।",
+            reply_markup=main_keyboard(),
+        )
     except Exception as error:
         log("Download failed for chat %s: %s", chat_id, error)
-        detail = str(error)[:700]
-        lower = detail.lower()
-        if "private" in lower or "sign in" in lower or "login" in lower or "members-only" in lower:
-            detail = "এই media public automated access-এর জন্য available নয়। Private/login-only content bypass করা যাবে না।"
-        elif "telegram limit" in lower or "larger than" in lower:
-            detail = "ভিডিওটি Telegram-এর 50 MB upload limit-এর চেয়ে বড়। কম quality বেছে আবার চেষ্টা করুন।"
-        edit_message(chat_id, status_id, f"<b>❌ Video download করা যায়নি</b>\n\n{escape(detail)}", reply_markup=platform_keyboard())
+        message = str(error).lower()
+        if "sign in" in message or "age" in message or "private" in message:
+            detail = (
+                "এই ভিডিওটি public automated access-এর জন্য available নয়। "
+                "Private বা sign-in bypass করা যাবে না।"
+            )
+        elif "50 mb" in message or "telegram limit" in message or "larger than" in message:
+            detail = (
+                "ফাইলটি Telegram-এর bot upload limit-এর চেয়ে বড়। "
+                "ছোট quality বেছে আবার চেষ্টা করুন।"
+            )
+        else:
+            detail = (
+                "লিংকটি public কিনা এবং ভিডিওটি available কিনা দেখে আবার চেষ্টা করুন। "
+                "প্রয়োজনে 360p বা Auto quality বেছে নিন।"
+            )
+        edit_message(
+            chat_id,
+            status_id,
+            f"<b>ডাউনলোড করা যায়নি</b>\n\n{escape(detail)}",
+            reply_markup=platform_keyboard(),
+        )
     finally:
         with STATE_LOCK:
             ACTIVE_CHATS.discard(chat_id)
-            DOWNLOAD_OPTIONS.pop(chat_id, None)
 
-def resolve_download(chat_id: int, status_id: int, source_url: str, platform: Platform) -> None:
+
+def resolve_download(chat_id: int, status_id: int, source_url: str) -> None:
     try:
         edit_message(
             chat_id,
             status_id,
-            f"<b>{platform.emoji} {escape(platform.title)}</b>\n\n"
-            "১/৩  Public media যাচাই করছি…",
+            "<b>🎵 TikTok</b>\n\n১/৩  Public video যাচাই করছি…",
         )
-        title, options = resolve_media(source_url, platform)
-        for option in options:
-            option["title"] = title
-            option["platform_title"] = platform.title
-            option["platform"] = platform.key
-
+        title, options = tiktok_info(source_url)
         with STATE_LOCK:
             DOWNLOAD_OPTIONS[chat_id] = {
                 "title": title,
                 "options": options,
                 "source_url": source_url,
-                "platform": platform.key,
                 "created_at": time.time(),
             }
-
         edit_message(
             chat_id,
             status_id,
-            f"<b>{escape(title[:100])}</b>\n\n"
+            f"<b>🎵 {escape(title[:80])}</b>\n\n"
             f"২/৩  {len(options)}টি quality পাওয়া গেছে।\n"
-            "একটি quality বেছে নিন:",
+            "MP4 বা MP3-এর জন্য একটি quality বেছে নিন:",
             reply_markup=quality_keyboard(options),
         )
     except Exception as error:
         log("Resolve failed for chat %s: %s", chat_id, error)
+        reason = str(error).lower()
+        if "sign in" in reason or "private" in reason or "age" in reason:
+            detail = "এই ভিডিওটি public automated access-এর জন্য available নয়।"
+        elif "minutes long" in reason:
+            detail = str(error)
+        else:
+            detail = (
+                "Video-টি public কিনা, URL ঠিক আছে কিনা এবং region/age restriction "
+                "আছে কিনা দেখে আবার চেষ্টা করুন।"
+            )
         edit_message(
             chat_id,
             status_id,
-            f"<b>❌ {escape(platform.title)} resolve করা যায়নি</b>\n\n"
-            f"{escape(str(error)[:700])}",
+            f"<b>TikTok video resolve করা যায়নি</b>\n\n{escape(detail)}",
             reply_markup=platform_keyboard(),
         )
 
-
-# ---------------------------------------------------------------------------
-# AI assistant
-# ---------------------------------------------------------------------------
 
 def ai_request(message: str) -> Any:
     if not META_AI_KEY:
@@ -845,32 +747,41 @@ def send_ai_response(chat_id: int, prompt: str, status_id: int) -> None:
         text = extract_text(response).strip()
         image_request = prompt.lstrip().lower().startswith("/image")
         if image_request and not image_url and not image_bytes:
-            image_url = fallback_image_url(prompt.lstrip()[len("/image"):].strip())
+            image_url = fallback_image_url(prompt.lstrip()[len("/image") :].strip())
         if image_url:
-            telegram_call("sendPhoto", {
-                "chat_id": str(chat_id),
-                "photo": image_url,
-                "caption": "Generated image",
-            })
+            telegram_call(
+                "sendPhoto",
+                {
+                    "chat_id": str(chat_id),
+                    "photo": image_url,
+                    "caption": "Generated image",
+                },
+            )
         elif image_bytes:
             telegram_upload(
-                "sendPhoto", "photo", "streamly-generated.png", image_bytes,
+                "sendPhoto",
+                "photo",
+                "streamly-generated.png",
+                image_bytes,
                 {"chat_id": str(chat_id), "caption": "Generated image"},
             )
         if image_request:
             edit_message(
-                chat_id, status_id,
+                chat_id,
+                status_id,
                 f"<b>Image ready</b>\n\n{escape(text[:700] or 'ছবি তৈরি করা হয়েছে।')}",
             )
             return
         edit_message(
-            chat_id, status_id,
+            chat_id,
+            status_id,
             f"<b>AI assistant</b>\n\n{escape(text[:MAX_TEXT_LENGTH] or 'Response পাওয়া গেছে।')}",
         )
     except Exception as error:
         log("AI request failed: %s", error)
         edit_message(
-            chat_id, status_id,
+            chat_id,
+            status_id,
             "<b>AI assistant</b>\n\nএই মুহূর্তে উত্তর আনা যায়নি। কিছুক্ষণ পর আবার চেষ্টা করুন।",
         )
 
@@ -879,8 +790,8 @@ def welcome_text(first_name: str = "") -> str:
     greeting = f"স্বাগতম, {escape(first_name)}" if first_name else "স্বাগতম"
     return (
         f"<b>{greeting} — Streamly</b>\n\n"
-        "TikTok, Facebook, Instagram ও YouTube-এর public video থেকে "
-        "শুধু MP4 video তৈরি করে Telegram-এ পাঠাতে পারবেন।\n\n"
+        "Public TikTok video থেকে MP4 বা MP3 তৈরি করে Telegram-এ পাঠান। "
+        "চাইলে AI assistant-ও ব্যবহার করতে পারবেন।\n\n"
         "<i>শুরু করতে নিচের একটি mode বেছে নিন।</i>"
     )
 
@@ -888,11 +799,10 @@ def welcome_text(first_name: str = "") -> str:
 def help_text() -> str:
     return (
         "<b>Streamly কীভাবে ব্যবহার করবেন</b>\n\n"
-        "১. <b>Video Downloader</b> চাপুন\n"
-        "২. TikTok / Facebook / Instagram / YouTube বেছে নিন\n"
-        "৩. Public video URL পাঠান\n"
-        "৪. Quality বেছে নিন\n"
-        "৫. Quality বেছে নিলে সরাসরি MP4 video download হবে\n\n"
+        "১. <b>Download TikTok</b> চাপুন\n"
+        "২. Public TikTok URL পাঠান\n"
+        "৩. Quality বেছে নিন\n"
+        "৪. MP4 video বা MP3 audio নির্বাচন করুন\n\n"
         f"সীমা: সর্বোচ্চ {MAX_VIDEO_SECONDS // 60} মিনিট এবং "
         f"{format_bytes(MAX_MEDIA_BYTES)}-এর মধ্যে ফাইল।\n\n"
         "Private, paid, age-restricted বা sign-in-only content bypass করা হয় না। "
@@ -923,7 +833,6 @@ def process_message(message: dict[str, Any]) -> None:
         CHAT_MODES[chat_id] = "home"
         with STATE_LOCK:
             DOWNLOAD_OPTIONS.pop(chat_id, None)
-            ACTIVE_CHATS.discard(chat_id)
         send_message(chat_id, "Cancelled. আবার শুরু করতে পারেন।", reply_markup=main_keyboard())
         return
     if command == "/download":
@@ -931,7 +840,7 @@ def process_message(message: dict[str, Any]) -> None:
         send_message(chat_id, "কোন platform-এর video download করবেন?", reply_markup=platform_keyboard())
         return
     if command == "/ai":
-        prompt = text[len(command):].strip()
+        prompt = text[len(command) :].strip()
         CHAT_MODES[chat_id] = "ai"
         if prompt:
             status = send_message(chat_id, "💭 Thinking....")
@@ -940,7 +849,7 @@ def process_message(message: dict[str, Any]) -> None:
             send_message(chat_id, "AI mode চালু। আপনার প্রশ্ন লিখুন।")
         return
     if command == "/image":
-        prompt = text[len(command):].strip()
+        prompt = text[len(command) :].strip()
         if not prompt:
             send_message(chat_id, "এভাবে লিখুন:\n<code>/image a futuristic city at night</code>")
             return
@@ -949,67 +858,41 @@ def process_message(message: dict[str, Any]) -> None:
         return
 
     mode = CHAT_MODES.get(chat_id, "home")
-    url = normalize_url(text)
-    detected = platform_from_url(url or "")
-
-    # Pasting a supported URL directly starts its download flow.
+    detected = platform_from_url(normalize_url(text) or "")
     if detected and mode in {"home", "ai"}:
+        if mode == "ai":
+            CHAT_MODES[chat_id] = "home"
         CHAT_PLATFORMS[chat_id] = detected.key
         mode = "awaiting_url"
 
     if mode == "platform":
-        send_message(chat_id, "একটি platform বেছে নিন।", reply_markup=platform_keyboard())
+        send_message(chat_id, "আগে TikTok বেছে নিন।", reply_markup=platform_keyboard())
         return
-
     if mode == "awaiting_url":
-        if not url:
-            send_message(chat_id, "Valid public URL পাঠান।", reply_markup=platform_keyboard())
-            return
-
-        selected_key = CHAT_PLATFORMS.get(chat_id)
-        platform = PLATFORM_BY_KEY.get(selected_key or "")
-        detected = platform_from_url(url)
-
-        # If the user pasted a URL from another supported platform, automatically
-        # switch to that platform rather than rejecting a perfectly valid URL.
-        if detected:
-            platform = detected
-            CHAT_PLATFORMS[chat_id] = detected.key
-
-        if not detected:
+        url = normalize_url(text)
+        platform = PLATFORM_BY_KEY.get(CHAT_PLATFORMS.get(chat_id, ""))
+        detected = platform_from_url(url or "") if url else None
+        if not url or not platform or not detected or detected.key != platform.key:
             send_message(
                 chat_id,
-                "এই URL supported platform-এর public video URL মনে হচ্ছে না।",
+                "এটি valid public TikTok URL মনে হচ্ছে না। আবার URL পাঠান।",
                 reply_markup=platform_keyboard(),
             )
             return
-        platform = detected
-        CHAT_PLATFORMS[chat_id] = detected.key
-
         with STATE_LOCK:
             if chat_id in ACTIVE_CHATS:
                 send_message(chat_id, "আপনার আগের download এখনও চলছে। একটু অপেক্ষা করুন।")
                 return
             ACTIVE_CHATS.add(chat_id)
-
-        status = send_message(
-            chat_id,
-            f"<b>{platform.emoji} {escape(platform.title)}</b>\n\nDownload শুরু করছি…",
-        )
+        status = send_message(chat_id, "<b>🎵 TikTok</b>\n\nDownload শুরু করছি…")
         CHAT_MODES[chat_id] = "home"
-        EXECUTOR.submit(resolve_download, chat_id, status["message_id"], url, platform)
+        EXECUTOR.submit(resolve_download, chat_id, status["message_id"], url)
         return
-
     if mode == "ai":
         status = send_message(chat_id, "💭 Thinking....")
         EXECUTOR.submit(send_ai_response, chat_id, text, status["message_id"])
         return
-
-    send_message(
-        chat_id,
-        "একটি mode বেছে নিন—Video Downloader বা AI assistant।",
-        reply_markup=main_keyboard(),
-    )
+    send_message(chat_id, "একটি mode বেছে নিন—TikTok download বা AI assistant।", reply_markup=main_keyboard())
 
 
 def process_callback(callback: dict[str, Any]) -> None:
@@ -1025,64 +908,45 @@ def process_callback(callback: dict[str, Any]) -> None:
     if data == "home":
         CHAT_MODES[chat_id] = "home"
         edit_message(chat_id, message_id, welcome_text(), reply_markup=main_keyboard())
-
     elif data == "help":
         edit_message(chat_id, message_id, help_text(), reply_markup=main_keyboard())
-
     elif data == "cancel":
         CHAT_MODES[chat_id] = "home"
         with STATE_LOCK:
             DOWNLOAD_OPTIONS.pop(chat_id, None)
-            ACTIVE_CHATS.discard(chat_id)
-        edit_message(chat_id, message_id, "Cancelled. আবার শুরু করতে পারেন.", reply_markup=main_keyboard())
-
+        edit_message(chat_id, message_id, "Cancelled. আবার শুরু করতে পারেন।", reply_markup=main_keyboard())
     elif data == "mode:download":
         CHAT_MODES[chat_id] = "platform"
-        edit_message(
-            chat_id, message_id,
-            "কোন platform-এর video download করবেন?",
-            reply_markup=platform_keyboard(),
-        )
-
+        edit_message(chat_id, message_id, "কোন platform-এর video download করবেন?", reply_markup=platform_keyboard())
     elif data == "mode:ai":
         CHAT_MODES[chat_id] = "ai"
         edit_message(chat_id, message_id, "AI assistant mode চালু। আপনার প্রশ্ন লিখুন।")
-
-    elif data.startswith("platform:"):
-        key = data.split(":", 1)[1]
-        platform = PLATFORM_BY_KEY.get(key)
-        if not platform:
-            edit_message(chat_id, message_id, "Unsupported platform.", reply_markup=platform_keyboard())
-            return
+    elif data == "platform:tiktok":
         CHAT_MODES[chat_id] = "awaiting_url"
-        CHAT_PLATFORMS[chat_id] = key
+        CHAT_PLATFORMS[chat_id] = "tiktok"
         edit_message(
             chat_id,
             message_id,
-            f"<b>{platform.emoji} {escape(platform.title)} selected</b>\n\n"
-            "এখন public video URL পাঠান।",
-            reply_markup=inline_keyboard([
-                [{"text": "Change platform", "callback_data": "mode:download"}],
-                [{"text": "Cancel", "callback_data": "cancel"}],
-            ]),
+            "<b>🎵 TikTok selected</b>\n\nএখন public video URL পাঠান।",
+            reply_markup=inline_keyboard(
+                [
+                    [{"text": "Change platform", "callback_data": "mode:download"}],
+                    [{"text": "Cancel", "callback_data": "cancel"}],
+                ]
+            ),
         )
-
     elif data == "back:quality":
         item = DOWNLOAD_OPTIONS.get(chat_id)
         if not item or time.time() - float(item.get("created_at", 0)) > STATE_TTL_SECONDS:
-            edit_message(
-                chat_id, message_id,
-                "Quality options expired। আবার link পাঠান.",
-                reply_markup=platform_keyboard(),
-            )
+            edit_message(chat_id, message_id, "Quality options expired। আবার link পাঠান।", reply_markup=platform_keyboard())
             return
         CHAT_MODES[chat_id] = "quality"
         edit_message(
-            chat_id, message_id,
+            chat_id,
+            message_id,
             f"<b>🎚 Quality নির্বাচন করুন</b>\n\n{escape(item['title'][:100])}",
             reply_markup=quality_keyboard(item["options"]),
         )
-
     elif data.startswith("quality:"):
         item = DOWNLOAD_OPTIONS.get(chat_id)
         try:
@@ -1091,29 +955,31 @@ def process_callback(callback: dict[str, Any]) -> None:
         except (ValueError, IndexError, TypeError, KeyError):
             option = None
         if not option:
-            edit_message(
-                chat_id, message_id,
-                "এই quality selection-টি আর active নেই। আবার URL দিন.",
-                reply_markup=platform_keyboard(),
-            )
+            edit_message(chat_id, message_id, "এই quality selection-টি আর active নেই। আবার URL দিন.", reply_markup=platform_keyboard())
             return
         option = dict(option)
         option["title"] = item["title"]
         option["source_url"] = item["source_url"]
-        option["platform_title"] = PLATFORM_BY_KEY.get(item.get("platform", ""), YOUTUBE).title
-        option["platform"] = item.get("platform", "")
-        CHAT_MODES[chat_id] = "home"
+        with STATE_LOCK:
+            DOWNLOAD_OPTIONS[chat_id]["selected"] = option
+        CHAT_MODES[chat_id] = "format"
         edit_message(
-            chat_id, message_id,
-            f"<b>✅ {escape(option['label'])}</b>\n\n🎬 MP4 video download শুরু হচ্ছে…",
-        )
-        EXECUTOR.submit(
-            send_download,
             chat_id,
             message_id,
-            item["source_url"],
-            option,
+            f"<b>✅ Quality selected</b>\n\n{escape(option['label'])}\n\nএখন output format নির্বাচন করুন:",
+            reply_markup=format_keyboard(),
         )
+    elif data.startswith("format:"):
+        output_format = data.split(":", 1)[1].lower()
+        item = DOWNLOAD_OPTIONS.get(chat_id) or {}
+        selected = item.get("selected")
+        if output_format not in {"mp3", "mp4"} or not selected:
+            edit_message(chat_id, message_id, "এই selection-টি আর active নেই। আবার link দিন।", reply_markup=platform_keyboard())
+            return
+        option = dict(selected)
+        option["output_format"] = output_format
+        CHAT_MODES[chat_id] = "home"
+        EXECUTOR.submit(send_download, chat_id, message_id, item["source_url"], option)
 
 
 def polling_loop() -> None:
@@ -1152,12 +1018,14 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
             return
-        payload = json.dumps({
-            "ok": True,
-            "service": "streamly",
-            "platforms": list(PLATFORM_BY_KEY.keys()),
-            "active_downloads": len(ACTIVE_CHATS),
-        }).encode()
+        payload = json.dumps(
+            {
+                "ok": True,
+                "service": "streamly",
+                "tiktok": True,
+                "active_downloads": len(ACTIVE_CHATS),
+            }
+        ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -1178,11 +1046,22 @@ def start_health_server() -> ThreadingHTTPServer:
     return server
 
 
-KEEP_ALIVE_MIN_SECONDS = 12 * 60
-KEEP_ALIVE_MAX_SECONDS = 14 * 60
+# ---------------------------------------------------------------------------
+# Keep-alive (self-ping) — Render free/hobby web services sleep after a
+# period of no inbound HTTP traffic. This background thread pings the
+# service's own public health endpoint on a fixed interval so it always
+# looks "active" and never goes idle.
+# ---------------------------------------------------------------------------
+KEEP_ALIVE_MIN_SECONDS = 12 * 60   # 12 minutes
+KEEP_ALIVE_MAX_SECONDS = 14 * 60   # 14 minutes
 
 
 def _keep_alive_url() -> str | None:
+    """
+    Figure out the public URL to ping. Render automatically sets
+    RENDER_EXTERNAL_URL for web services — no manual config needed there.
+    KEEP_ALIVE_URL can be set manually to override/for other hosts.
+    """
     explicit = os.getenv("KEEP_ALIVE_URL", "").strip()
     if explicit:
         return explicit.rstrip("/") + "/healthz"
@@ -1195,9 +1074,12 @@ def _keep_alive_url() -> str | None:
 def keep_alive_loop() -> None:
     url = _keep_alive_url()
     if not url:
-        log("Keep-alive disabled: no RENDER_EXTERNAL_URL or KEEP_ALIVE_URL found.")
+        log(
+            "Keep-alive disabled: no RENDER_EXTERNAL_URL or KEEP_ALIVE_URL "
+            "found in environment."
+        )
         return
-    log("Keep-alive enabled — pinging every ~12-14 minutes")
+    log("Keep-alive enabled — pinging %s every ~12-14 minutes", url)
     while not SHUTDOWN.wait(random.uniform(KEEP_ALIVE_MIN_SECONDS, KEEP_ALIVE_MAX_SECONDS)):
         try:
             status, _, _ = http_request(url, method="GET", timeout=20, max_bytes=4096)
@@ -1227,11 +1109,7 @@ def main() -> None:
         telegram_call("deleteWebhook", {"drop_pending_updates": "false"})
         me = telegram_call("getMe")
         log("Bot connected as @%s", me.get("username", "unknown"))
-        polling_thread = threading.Thread(
-            target=polling_loop,
-            name="telegram-polling",
-            daemon=True,
-        )
+        polling_thread = threading.Thread(target=polling_loop, name="telegram-polling", daemon=True)
         polling_thread.start()
         while not SHUTDOWN.wait(1):
             pass
@@ -1240,7 +1118,6 @@ def main() -> None:
         health_server.shutdown()
         EXECUTOR.shutdown(wait=False, cancel_futures=True)
         log("Streamly stopped")
-
 
 if __name__ == "__main__":
     main()
