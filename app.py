@@ -331,16 +331,6 @@ def quality_keyboard(options: list[dict[str, Any]]) -> str:
     return inline_keyboard(rows)
 
 
-def format_keyboard() -> str:
-    return inline_keyboard([
-        [
-            {"text": "🎬 MP4 video", "callback_data": "format:mp4"},
-            {"text": "🎵 MP3 audio", "callback_data": "format:mp3"},
-        ],
-        [{"text": "↩️ Choose another quality", "callback_data": "back:quality"}],
-        [{"text": "✖️ Cancel", "callback_data": "cancel"}],
-    ])
-
 
 def progress_text(title: str, downloaded: int, total: int, stage: str) -> str:
     if total:
@@ -378,74 +368,6 @@ def cleanup_state() -> None:
 # ---------------------------------------------------------------------------
 # Multi-platform downloader
 # ---------------------------------------------------------------------------
-
-def _remote_url(value: Any) -> str:
-    if isinstance(value, str):
-        value = value.strip()
-        if value.startswith(("http://", "https://")):
-            return value
-    return ""
-
-def _media_links(value: Any) -> tuple[list[str], list[str]]:
-    videos: list[str] = []
-    audios: list[str] = []
-    def walk(obj: Any, key_hint: str = "") -> None:
-        if isinstance(obj, dict):
-            for key, item in obj.items(): walk(item, str(key).lower())
-        elif isinstance(obj, list):
-            for item in obj: walk(item, key_hint)
-        elif isinstance(obj, str):
-            url = _remote_url(obj)
-            if not url: return
-            key = key_hint.lower()
-            if any(x in key for x in ("music", "audio", "mp3", "sound")): audios.append(url)
-            elif any(x in key for x in ("video", "play", "download", "url", "hd")): videos.append(url)
-    walk(value)
-    return list(dict.fromkeys(videos)), list(dict.fromkeys(audios))
-
-def _tiktok_options(title: str, video_urls: list[str], audio_urls: list[str]) -> tuple[str, list[dict[str, Any]]]:
-    video_urls = list(dict.fromkeys(_remote_url(x) for x in video_urls if _remote_url(x)))
-    audio_urls = list(dict.fromkeys(_remote_url(x) for x in audio_urls if _remote_url(x)))
-    if not video_urls: raise RuntimeError("TikTok resolver returned no video URL.")
-    options=[]
-    heights=[2160,1440,1080,720,480,360]
-    for idx,url in enumerate(video_urls[:8]):
-        height=heights[min(idx,len(heights)-1)]
-        options.append({"url":url,"format":f"tiktok-{idx}","height":height,"size":0,"ext":"mp4","label":"Best MP4" if idx==0 else f"MP4 {height}p","title":title,"audio_url":audio_urls[0] if audio_urls else ""})
-    return title, options
-
-def _resolve_tikwm(source_url: str) -> tuple[str, list[dict[str, Any]]]:
-    endpoint=f"{TIKWM_ENDPOINT}?{urlencode({'url':source_url,'hd':'1'})}"
-    response=json_request(endpoint, timeout=45)
-    if not isinstance(response,dict) or response.get("code") not in {0,"0",None}: raise RuntimeError(str(response.get("msg") if isinstance(response,dict) else "") or "TikWM did not resolve this TikTok URL")
-    data=response.get("data") if isinstance(response,dict) else None
-    if not isinstance(data,dict): raise RuntimeError("TikWM returned no media data")
-    duration=int(data.get("duration") or 0)
-    if duration>MAX_VIDEO_SECONDS: raise RuntimeError(f"This video is {duration//60} minutes long. The service limit is {MAX_VIDEO_SECONDS//60} minutes.")
-    title=str(data.get("title") or "TikTok video")
-    videos,audios=_media_links(data)
-    preferred_video=[_remote_url(data.get(k)) for k in ("hdplay","play","wmplay") if _remote_url(data.get(k))]
-    preferred_audio=[_remote_url(data.get(k)) for k in ("music","music_url","mp3","audio") if _remote_url(data.get(k))]
-    return _tiktok_options(title,list(dict.fromkeys(preferred_video+videos)),list(dict.fromkeys(preferred_audio+audios)))
-
-def _resolve_snaptik(source_url: str) -> tuple[str, list[dict[str, Any]]]:
-    body=urlencode({"url":source_url}).encode()
-    _,_,raw=http_request(SNAPTIK_ENDPOINT,method="POST",payload=body,headers={"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8","Referer":"https://snaptik.app/"},timeout=45,max_bytes=4*1024*1024)
-    try: response=json.loads(raw.decode("utf-8",errors="replace"))
-    except json.JSONDecodeError as error: raise RuntimeError("SnapTik returned invalid JSON") from error
-    if isinstance(response,dict) and response.get("success") is False: raise RuntimeError("SnapTik could not resolve this TikTok URL")
-    videos,audios=_media_links(response); title="TikTok video"
-    if isinstance(response,dict):
-        data=response.get("data")
-        title=str((data.get("title") if isinstance(data,dict) else response.get("title")) or title)
-    return _tiktok_options(title,videos,audios)
-
-def tiktok_info(source_url: str) -> tuple[str, list[dict[str, Any]]]:
-    errors=[]
-    for resolver in (_resolve_tikwm,_resolve_snaptik):
-        try: return resolver(source_url)
-        except Exception as error: errors.append(str(error))
-    raise RuntimeError("TikTok download APIs could not resolve this URL: " + " | ".join(errors)[:500])
 
 def _import_yt_dlp():
     try:
@@ -485,156 +407,172 @@ def _option_label(height: int, ext: str, filesize: int) -> str:
     return f"{quality} {ext.upper()}{suffix}"
 
 
-def _yt_dlp_options(source_url: str, output_format: str = "mp4") -> dict[str, Any]:
-    # No login cookies are supplied. This deliberately handles public/accessible
-    # media only and does not attempt to bypass private, paywalled, or login-only content.
-    base = {
+
+def _tiktok_options(title: str, video_urls: list[str]) -> tuple[str, list[dict[str, Any]]]:
+    if not video_urls:
+        raise RuntimeError("TikTok API did not return a downloadable video URL")
+    options: list[dict[str, Any]] = []
+    labels = ["HD quality", "Standard quality", "Auto quality"]
+    for index, video_url in enumerate(video_urls[:3]):
+        options.append({
+            "format": video_url,
+            "url": video_url,
+            "height": 0,
+            "size": 0,
+            "ext": "mp4",
+            "label": labels[min(index, len(labels) - 1)],
+        })
+    return title, options
+
+
+def _resolve_tikwm(source_url: str) -> tuple[str, list[dict[str, Any]]]:
+    endpoint = f"{TIKWM_ENDPOINT}?{urlencode({'url': source_url, 'hd': '1'})}"
+    response = json_request(endpoint, timeout=45)
+    if not isinstance(response, dict) or response.get("code") not in {0, "0", None}:
+        message = response.get("msg") if isinstance(response, dict) else ""
+        raise RuntimeError(str(message or "TikWM did not resolve this TikTok URL"))
+    data = response.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("TikWM returned no media data")
+    duration = int(data.get("duration") or 0)
+    if duration > MAX_VIDEO_SECONDS:
+        raise RuntimeError(f"This video is {duration // 60} minutes long. The limit is {MAX_VIDEO_SECONDS // 60} minutes.")
+    title = str(data.get("title") or "TikTok video")
+    preferred_video = [_remote_url(data.get(k)) for k in ("hdplay", "play", "wmplay") if _remote_url(data.get(k))]
+    video_urls, _ = _media_links(data)
+    video_urls = list(dict.fromkeys(preferred_video + video_urls))
+    title, options = _tiktok_options(title, video_urls)
+    known_sizes = {data.get("hdplay"): data.get("hd_size"), data.get("play"): data.get("size"), data.get("wmplay"): data.get("wm_size")}
+    for option in options:
+        try:
+            option["size"] = int(known_sizes.get(option["url"]) or 0)
+        except (TypeError, ValueError):
+            option["size"] = 0
+    return title, options
+
+
+def _resolve_snaptik(source_url: str) -> tuple[str, list[dict[str, Any]]]:
+    body = urlencode({"url": source_url}).encode()
+    _, _, raw = http_request(
+        SNAPTIK_ENDPOINT, method="POST", payload=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "Referer": "https://snaptik.app/"},
+        timeout=45, max_bytes=4 * 1024 * 1024,
+    )
+    try:
+        response = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as error:
+        raise RuntimeError("SnapTik returned invalid JSON") from error
+    if isinstance(response, dict) and response.get("success") is False:
+        raise RuntimeError("SnapTik could not resolve this TikTok URL")
+    video_urls, _ = _media_links(response)
+    title = "TikTok video"
+    if isinstance(response, dict):
+        data = response.get("data")
+        if isinstance(data, dict):
+            title = str(response.get("title") or data.get("title") or title)
+        else:
+            title = str(response.get("title") or title)
+    return _tiktok_options(title, video_urls)
+
+
+def tiktok_info(source_url: str) -> tuple[str, list[dict[str, Any]]]:
+    errors: list[str] = []
+    for resolver in (_resolve_tikwm, _resolve_snaptik):
+        try:
+            return resolver(source_url)
+        except Exception as error:
+            errors.append(str(error))
+    raise RuntimeError("TikTok download APIs could not resolve this URL")
+
+def _yt_dlp_options(source_url: str, format_selector: str | None = None) -> dict[str, Any]:
+    # Video-only product: never request or convert to an audio-only output.
+    # yt-dlp merges the best video + audio streams, then recodes only when
+    # necessary so the final file is always an MP4 video.
+    return {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "restrictfilenames": True,
-        "socket_timeout": 30,
-        "retries": 2,
-        "fragment_retries": 2,
+        "socket_timeout": 60,
+        "retries": 5,
+        "fragment_retries": 5,
         "http_headers": {"User-Agent": USER_AGENT},
+        "js_runtimes": {"deno": {}},
+        "remote_components": {"ejs": "github"},
+        "format": format_selector or "bestvideo*+bestaudio/best",
+        "merge_output_format": "mp4",
+        "recodevideo": "mp4",
     }
-    if output_format == "mp3":
-        base["format"] = "bestaudio/best"
-    else:
-        # Prefer a single-file MP4 when available so Telegram can receive it
-        # without server-side merging. Fall back to best compatible MP4.
-        base["format"] = (
-            "best[ext=mp4][height<=2160]/"
-            "bestvideo[ext=mp4][height<=2160]+bestaudio[ext=m4a]/"
-            "best[height<=2160]/best"
-        )
-    return base
+
+def _format_heights(info: dict[str, Any]) -> list[int]:
+    heights: set[int] = set()
+    for fmt in info.get("formats") or []:
+        if not isinstance(fmt, dict):
+            continue
+        if fmt.get("vcodec") in (None, "none"):
+            continue
+        h = _human_height(fmt.get("height"))
+        if 144 <= h <= 2160:
+            heights.add(h)
+    # Present useful standard choices, mapped to the nearest available source.
+    wanted = [2160, 1440, 1080, 720, 480, 360, 240, 144]
+    return [h for h in wanted if any(x >= h for x in heights)]
 
 
 def _resolve_with_ytdlp(source_url: str, platform: Platform) -> tuple[str, list[dict[str, Any]]]:
     yt_dlp = _import_yt_dlp()
     opts = _yt_dlp_options(source_url)
     opts["skip_download"] = True
-
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(source_url, download=False)
     except Exception as error:
         message = str(error)
         lower = message.lower()
-        if any(word in lower for word in ("private", "login", "sign in", "authentication")):
+        if any(word in lower for word in ("private", "login", "sign in", "authentication", "members-only")):
             raise RuntimeError(
                 "এই media public automated access-এর জন্য available নয়। "
                 "Private/login-only content bypass করা যাবে না।"
             ) from error
-        raise RuntimeError(f"{platform.title} URL resolve করা যায়নি: {message[:350]}") from error
+        raise RuntimeError(f"{platform.title} resolve করা যায়নি: {message[:450]}") from error
 
     if not isinstance(info, dict):
         raise RuntimeError("Downloader returned invalid media information.")
-
     duration = int(info.get("duration") or 0)
     if duration > MAX_VIDEO_SECONDS:
         raise RuntimeError(
-            f"এই ভিডিওটি {duration // 60} মিনিটের বেশি। "
-            f"সর্বোচ্চ সীমা {MAX_VIDEO_SECONDS // 60} মিনিট।"
+            f"এই ভিডিওটি {duration // 60} মিনিটের বেশি। সর্বোচ্চ সীমা {MAX_VIDEO_SECONDS // 60} মিনিট।"
         )
-
     title = str(info.get("title") or f"{platform.title} video")
-    formats = info.get("formats") or []
-    candidates: list[dict[str, Any]] = []
-
-    # Prefer progressive formats: these can be sent as one file without merging.
-    for fmt in formats:
-        if not isinstance(fmt, dict):
-            continue
-        url = fmt.get("url")
-        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-            continue
-        if fmt.get("vcodec") in (None, "none"):
-            continue
-        ext = str(fmt.get("ext") or "")
-        if ext not in {"mp4", "webm", "mkv"}:
-            continue
-        height = _human_height(fmt.get("height"))
-        filesize = int(fmt.get("filesize") or fmt.get("filesize_approx") or 0)
-        if height <= 0:
-            continue
-        if filesize and filesize > MAX_MEDIA_BYTES:
-            continue
-        candidates.append({
-            "url": url,
-            "format": str(fmt.get("format_id") or ""),
-            "height": height,
-            "size": filesize,
-            "ext": ext,
-            "label": _option_label(height, ext, filesize),
-            "title": title,
-            "audio_url": "",
-        })
-
-    # If no progressive formats exist, keep the best direct video URL as fallback.
-    if not candidates:
-        for fmt in reversed(formats):
-            if not isinstance(fmt, dict):
-                continue
-            url = fmt.get("url")
-            if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-                continue
-            if fmt.get("vcodec") in (None, "none"):
-                continue
-            height = _human_height(fmt.get("height"))
-            filesize = int(fmt.get("filesize") or fmt.get("filesize_approx") or 0)
-            if height <= 0 or (filesize and filesize > MAX_MEDIA_BYTES):
-                continue
-            ext = str(fmt.get("ext") or "mp4")
-            candidates.append({
-                "url": url,
-                "format": str(fmt.get("format_id") or ""),
-                "height": height,
-                "size": filesize,
-                "ext": ext,
-                "label": _option_label(height, ext, filesize),
-                "title": title,
-                "audio_url": "",
-            })
-            if len(candidates) >= 6:
-                break
-
-    # De-duplicate by height and keep the best size-known candidate.
-    by_height: dict[int, dict[str, Any]] = {}
-    for item in candidates:
-        h = item["height"]
-        if h not in by_height or item.get("size", 0) > by_height[h].get("size", 0):
-            by_height[h] = item
-
-    options = sorted(by_height.values(), key=lambda x: x["height"], reverse=True)[:8]
-
-    if not options:
-        # Some sites expose only an extractor-selected URL.
+    heights = _format_heights(info)
+    if not heights:
+        # Some extractors expose only a direct selected URL. Keep one safe fallback.
         direct = info.get("url")
         if isinstance(direct, str) and direct.startswith(("http://", "https://")):
-            ext = str(info.get("ext") or "mp4")
-            size = int(info.get("filesize") or 0)
-            if not size or size <= MAX_MEDIA_BYTES:
-                options = [{
-                    "url": direct,
-                    "format": str(info.get("format_id") or "best"),
-                    "height": _human_height(info.get("height")),
-                    "size": size,
-                    "ext": ext,
-                    "label": _option_label(_human_height(info.get("height")), ext, size),
-                    "title": title,
-                    "audio_url": "",
-                }]
+            return title, [{
+                "url": direct, "format": "best", "height": _human_height(info.get("height")),
+                "size": int(info.get("filesize") or 0), "ext": "mp4",
+                "label": "Auto quality", "title": title,
+                "selector": "best",
+            }]
+        raise RuntimeError("এই media-এর জন্য downloadable video format পাওয়া যায়নি।")
 
-    if not options:
-        raise RuntimeError(
-            "এই media-এর জন্য Telegram-এ পাঠানোর উপযোগী direct video format পাওয়া যায়নি।"
-        )
+    options: list[dict[str, Any]] = []
+    for h in heights[:8]:
+        options.append({
+            "format": f"height<={h}",
+            "selector": f"bestvideo*[height<={h}]+bestaudio/best[height<={h}]/best",
+            "url": "",
+            "height": h,
+            "size": 0,
+            "ext": "mp4",
+            "label": f"{_option_label(h, 'mp4', 0)}",
+            "title": title,
+        })
     return title, options
 
-
 def resolve_media(source_url: str, platform: Platform) -> tuple[str, list[dict[str, Any]]]:
+    # TikTok keeps the proven direct-API path. Other platforms use yt-dlp.
     if platform.key == "tiktok":
         return tiktok_info(source_url)
     return _resolve_with_ytdlp(source_url, platform)
@@ -663,163 +601,111 @@ def _download_bytes(url: str, max_bytes: int = MAX_MEDIA_BYTES) -> bytes:
         raise RuntimeError(f"Media could not be downloaded: {error}") from error
 
 
-def send_download(
-    chat_id: int,
-    status_id: int,
-    source_url: str,
-    option: dict[str, Any],
-) -> None:
-    last_update = 0.0
+def _upload_local_media(chat_id: int, title: str, path: str, caption: str) -> None:
+    size = os.path.getsize(path)
+    if size > MAX_MEDIA_BYTES:
+        raise RuntimeError(
+            f"ফাইলটি {format_bytes(size)}; Telegram limit-এর মধ্যে নেই। কম quality বেছে নিন।"
+        )
+    with open(path, "rb") as fh:
+        data = fh.read()
+    telegram_upload(
+        "sendVideo", "video", safe_filename(title, "mp4"), data,
+        {"chat_id": str(chat_id), "caption": caption, "supports_streaming": "true"},
+    )
 
+def _download_ytdlp_file(source_url: str, title: str, option: dict[str, Any], progress_callback: Callable[[int, int, str], None]) -> str:
+    import tempfile
+    yt_dlp = _import_yt_dlp()
+    tmp = tempfile.mkdtemp(prefix="streamly-")
+    outtmpl = os.path.join(tmp, "%(id)s.%(ext)s")
+    selector = str(option.get("selector") or "bestvideo*+bestaudio/best")
+    opts = _yt_dlp_options(source_url, selector)
+    opts.update({"outtmpl": outtmpl})
+
+    def hook(d: dict[str, Any]) -> None:
+        if d.get("status") == "downloading":
+            progress_callback(
+                int(d.get("downloaded_bytes") or 0),
+                int(d.get("total_bytes") or d.get("total_bytes_estimate") or 0),
+                "Video download হচ্ছে…",
+            )
+        elif d.get("status") == "finished":
+            progress_callback(
+                int(d.get("downloaded_bytes") or 0),
+                int(d.get("total_bytes") or 0),
+                "Video MP4 করা হচ্ছে…",
+            )
+    opts["progress_hooks"] = [hook]
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([source_url])
+        files = [
+            os.path.join(tmp, name) for name in os.listdir(tmp)
+            if os.path.isfile(os.path.join(tmp, name))
+        ]
+        mp4 = [p for p in files if p.lower().endswith(".mp4")]
+        if not mp4:
+            raise RuntimeError("Downloader কোনো MP4 video তৈরি করেনি।")
+        return max(mp4, key=os.path.getsize)
+    except Exception:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+def send_download(chat_id: int, status_id: int, source_url: str, option: dict[str, Any]) -> None:
+    last_update = 0.0
     def update(downloaded: int, total: int, stage: str) -> None:
         nonlocal last_update
         now = time.monotonic()
-        if now - last_update < 1.2:
+        if now - last_update < 1.0 and downloaded != 0:
             return
         last_update = now
-        edit_message(
-            chat_id,
-            status_id,
-            progress_text(str(option.get("title", "Video")), downloaded, total, stage),
-        )
+        edit_message(chat_id, status_id, progress_text(str(option.get("title", "Video")), downloaded, total, stage))
 
     try:
-        output_format = str(option.get("output_format") or "mp4")
-        if output_format not in {"mp4", "mp3"}:
-            raise RuntimeError("Unsupported output format.")
-
-        media_url = option.get("url")
-        if not isinstance(media_url, str) or not media_url.startswith(("http://", "https://")):
-            raise RuntimeError("Direct media URL পাওয়া যায়নি।")
-
+        platform_key = str(option.get("platform") or "")
         title = str(option.get("title") or "download")
-        extension = "mp3" if output_format == "mp3" else "mp4"
+        caption = f"<b>{escape(title[:900])}</b>\n\n🎬 MP4 video"
 
-        if output_format == "mp3" and str(option.get("platform_title", "")).lower() == "tiktok":
-            audio_url = option.get("audio_url")
-            if not isinstance(audio_url, str) or not audio_url.startswith(("http://", "https://")):
-                raise RuntimeError("এই TikTok video-এর direct audio URL পাওয়া যায়নি।")
-            caption=f"<b>{escape(title[:900])}</b>"
+        if platform_key == "tiktok":
+            media_url = _remote_url(option.get("url"))
+            if not media_url:
+                raise RuntimeError("TikTok selected video-এর media URL পাওয়া যায়নি।")
+            update(0, int(option.get("size") or 0), "Telegram-এ video পাঠানো হচ্ছে…")
             try:
-                telegram_call("sendAudio", {"chat_id":str(chat_id),"audio":audio_url,"caption":caption,"title":title[:200]})
+                telegram_call("sendVideo", {"chat_id": str(chat_id), "video": media_url, "caption": caption, "supports_streaming": "true"})
             except Exception:
-                update(0,0,"Server-এ audio download করা হচ্ছে…")
-                data=_download_bytes(audio_url)
-                update(len(data),len(data),"Telegram-এ audio upload করা হচ্ছে…")
-                telegram_upload("sendAudio","audio",safe_filename(title,"mp3"),data,{"chat_id":str(chat_id),"caption":caption,"title":title[:200]})
-        elif output_format == "mp4":
-            known_size = int(option.get("size") or 0)
-            if known_size and known_size > MAX_MEDIA_BYTES:
-                raise RuntimeError(
-                    f"ফাইলটি {format_bytes(known_size)}, Telegram limit-এর বেশি। "
-                    "কম quality বেছে নিন।"
-                )
-            progress_callback = update
-            progress_callback(0, known_size, "Telegram server-এ video পাঠানো হচ্ছে…")
-            caption = (
-                f"<b>{escape(title[:900])}</b>\n\n"
-                f"Downloaded by Streamly • {escape(option.get('platform_title', 'Video'))}"
-            )
-            try:
-                telegram_call("sendVideo", {
-                    "chat_id": str(chat_id),
-                    "video": media_url,
-                    "caption": caption,
-                    "supports_streaming": "true",
-                })
-            except Exception:
-                # Some direct URLs are not accepted by Telegram. Fall back to
-                # downloading locally, still respecting the configured size limit.
-                update(0, known_size, "Server-এ video download করা হচ্ছে…")
                 data = _download_bytes(media_url)
+                if len(data) > MAX_MEDIA_BYTES:
+                    raise RuntimeError("TikTok video Telegram limit-এর চেয়ে বড়।")
                 update(len(data), len(data), "Telegram-এ video upload করা হচ্ছে…")
-                telegram_upload(
-                    "sendVideo",
-                    "video",
-                    safe_filename(title, extension),
-                    data,
-                    {
-                        "chat_id": str(chat_id),
-                        "caption": caption,
-                        "supports_streaming": "true",
-                    },
-                )
+                telegram_upload("sendVideo", "video", safe_filename(title, "mp4"), data, {"chat_id": str(chat_id), "caption": caption, "supports_streaming": "true"})
         else:
-            yt_dlp = _import_yt_dlp()
-            import tempfile
+            update(0, 0, "Video download শুরু হচ্ছে…")
+            path = _download_ytdlp_file(source_url, title, option, update)
+            try:
+                _upload_local_media(chat_id, title, path, caption)
+                update(os.path.getsize(path), os.path.getsize(path), "Telegram-এ video upload complete")
+            finally:
+                import shutil
+                shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
-            with tempfile.TemporaryDirectory(prefix="streamly-") as tmp:
-                outtmpl = os.path.join(tmp, "%(id)s.%(ext)s")
-                opts = _yt_dlp_options(source_url)
-                opts.update({
-                    "format": "bestaudio/best",
-                    "outtmpl": outtmpl,
-                    "noplaylist": True,
-                    "postprocessors": [{
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "192",
-                    }],
-                })
-                update(0, 0, "Audio download ও conversion করা হচ্ছে…")
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.download([source_url])
-
-                files = [
-                    os.path.join(tmp, name)
-                    for name in os.listdir(tmp)
-                    if os.path.isfile(os.path.join(tmp, name))
-                ]
-                if not files:
-                    raise RuntimeError("MP3 file তৈরি করা যায়নি।")
-                audio_path = files[0]
-                size = os.path.getsize(audio_path)
-                if size > MAX_MEDIA_BYTES:
-                    raise RuntimeError(
-                        f"MP3 file {format_bytes(size)}, Telegram limit-এর বেশি।"
-                    )
-                with open(audio_path, "rb") as fh:
-                    data = fh.read()
-                update(len(data), len(data), "Telegram-এ audio upload করা হচ্ছে…")
-                telegram_upload(
-                    "sendAudio",
-                    "audio",
-                    safe_filename(title, "mp3"),
-                    data,
-                    {
-                        "chat_id": str(chat_id),
-                        "caption": f"<b>{escape(title[:900])}</b>",
-                        "title": title[:200],
-                    },
-                )
-
-        edit_message(
-            chat_id,
-            status_id,
-            "<b>✅ Download complete</b>\n\nআপনার ফাইল পাঠানো হয়েছে।",
-            reply_markup=main_keyboard(),
-        )
+        edit_message(chat_id, status_id, "<b>✅ Video download complete</b>\n\nআপনার MP4 video পাঠানো হয়েছে।", reply_markup=main_keyboard())
     except Exception as error:
         log("Download failed for chat %s: %s", chat_id, error)
-        message = str(error).lower()
-        if any(x in message for x in ("private", "login", "sign in", "authentication", "age-restricted")):
-            detail = "এই content public automated access-এর জন্য available নয়। Private/login-only content bypass করা যাবে না।"
-        elif "telegram limit" in message or "larger than" in message or "larger" in message:
-            detail = "ফাইলটি Telegram-এর bot limit-এর চেয়ে বড়। কম quality বেছে আবার চেষ্টা করুন।"
-        elif "ffmpeg" in message:
-            detail = "MP3 conversion-এর জন্য FFmpeg প্রয়োজন। Server/Docker image-এ FFmpeg install আছে কিনা দেখুন।"
-        else:
-            detail = str(error)[:600]
-        edit_message(
-            chat_id,
-            status_id,
-            f"<b>❌ Download করা যায়নি</b>\n\n{escape(detail)}",
-            reply_markup=platform_keyboard(),
-        )
+        detail = str(error)[:700]
+        lower = detail.lower()
+        if "private" in lower or "sign in" in lower or "login" in lower or "members-only" in lower:
+            detail = "এই media public automated access-এর জন্য available নয়। Private/login-only content bypass করা যাবে না।"
+        elif "telegram limit" in lower or "larger than" in lower:
+            detail = "ভিডিওটি Telegram-এর 50 MB upload limit-এর চেয়ে বড়। কম quality বেছে আবার চেষ্টা করুন।"
+        edit_message(chat_id, status_id, f"<b>❌ Video download করা যায়নি</b>\n\n{escape(detail)}", reply_markup=platform_keyboard())
     finally:
         with STATE_LOCK:
             ACTIVE_CHATS.discard(chat_id)
-
+            DOWNLOAD_OPTIONS.pop(chat_id, None)
 
 def resolve_download(chat_id: int, status_id: int, source_url: str, platform: Platform) -> None:
     try:
@@ -833,6 +719,7 @@ def resolve_download(chat_id: int, status_id: int, source_url: str, platform: Pl
         for option in options:
             option["title"] = title
             option["platform_title"] = platform.title
+            option["platform"] = platform.key
 
         with STATE_LOCK:
             DOWNLOAD_OPTIONS[chat_id] = {
@@ -966,7 +853,7 @@ def welcome_text(first_name: str = "") -> str:
     return (
         f"<b>{greeting} — Streamly</b>\n\n"
         "TikTok, Facebook, Instagram ও YouTube-এর public video থেকে "
-        "MP4 বা MP3 তৈরি করে Telegram-এ পাঠাতে পারবেন।\n\n"
+        "শুধু MP4 video তৈরি করে Telegram-এ পাঠাতে পারবেন।\n\n"
         "<i>শুরু করতে নিচের একটি mode বেছে নিন।</i>"
     )
 
@@ -978,7 +865,7 @@ def help_text() -> str:
         "২. TikTok / Facebook / Instagram / YouTube বেছে নিন\n"
         "৩. Public video URL পাঠান\n"
         "৪. Quality বেছে নিন\n"
-        "৫. MP4 বা MP3 নির্বাচন করুন\n\n"
+        "৫. Quality বেছে নিলে সরাসরি MP4 video download হবে\n\n"
         f"সীমা: সর্বোচ্চ {MAX_VIDEO_SECONDS // 60} মিনিট এবং "
         f"{format_bytes(MAX_MEDIA_BYTES)}-এর মধ্যে ফাইল।\n\n"
         "Private, paid, age-restricted বা sign-in-only content bypass করা হয় না। "
@@ -1062,13 +949,15 @@ def process_message(message: dict[str, Any]) -> None:
             platform = detected
             CHAT_PLATFORMS[chat_id] = detected.key
 
-        if not platform or not detected:
+        if not detected:
             send_message(
                 chat_id,
                 "এই URL supported platform-এর public video URL মনে হচ্ছে না।",
                 reply_markup=platform_keyboard(),
             )
             return
+        platform = detected
+        CHAT_PLATFORMS[chat_id] = detected.key
 
         with STATE_LOCK:
             if chat_id in ACTIVE_CHATS:
@@ -1184,33 +1073,13 @@ def process_callback(callback: dict[str, Any]) -> None:
         option = dict(option)
         option["title"] = item["title"]
         option["source_url"] = item["source_url"]
-        option["platform_title"] = PLATFORM_BY_KEY.get(
-            item.get("platform", ""), YOUTUBE
-        ).title
-        with STATE_LOCK:
-            DOWNLOAD_OPTIONS[chat_id]["selected"] = option
-        CHAT_MODES[chat_id] = "format"
+        option["platform_title"] = PLATFORM_BY_KEY.get(item.get("platform", ""), YOUTUBE).title
+        option["platform"] = item.get("platform", "")
+        CHAT_MODES[chat_id] = "home"
         edit_message(
             chat_id, message_id,
-            f"<b>✅ Quality selected</b>\n\n"
-            f"{escape(option['label'])}\n\nএখন output format নির্বাচন করুন:",
-            reply_markup=format_keyboard(),
+            f"<b>✅ {escape(option['label'])}</b>\n\n🎬 MP4 video download শুরু হচ্ছে…",
         )
-
-    elif data.startswith("format:"):
-        output_format = data.split(":", 1)[1].lower()
-        item = DOWNLOAD_OPTIONS.get(chat_id) or {}
-        selected = item.get("selected")
-        if output_format not in {"mp3", "mp4"} or not selected:
-            edit_message(
-                chat_id, message_id,
-                "এই selection-টি আর active নেই। আবার link দিন.",
-                reply_markup=platform_keyboard(),
-            )
-            return
-        option = dict(selected)
-        option["output_format"] = output_format
-        CHAT_MODES[chat_id] = "home"
         EXECUTOR.submit(
             send_download,
             chat_id,
