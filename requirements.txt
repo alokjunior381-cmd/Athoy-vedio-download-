@@ -1,1 +1,2 @@
 # TikTok downloads use the direct TikWM and SnapTik HTTP APIs.
+yt-dlp>=2025.01.15
