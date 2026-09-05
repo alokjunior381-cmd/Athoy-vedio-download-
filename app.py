@@ -379,6 +379,74 @@ def cleanup_state() -> None:
 # Multi-platform downloader
 # ---------------------------------------------------------------------------
 
+def _remote_url(value: Any) -> str:
+    if isinstance(value, str):
+        value = value.strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    return ""
+
+def _media_links(value: Any) -> tuple[list[str], list[str]]:
+    videos: list[str] = []
+    audios: list[str] = []
+    def walk(obj: Any, key_hint: str = "") -> None:
+        if isinstance(obj, dict):
+            for key, item in obj.items(): walk(item, str(key).lower())
+        elif isinstance(obj, list):
+            for item in obj: walk(item, key_hint)
+        elif isinstance(obj, str):
+            url = _remote_url(obj)
+            if not url: return
+            key = key_hint.lower()
+            if any(x in key for x in ("music", "audio", "mp3", "sound")): audios.append(url)
+            elif any(x in key for x in ("video", "play", "download", "url", "hd")): videos.append(url)
+    walk(value)
+    return list(dict.fromkeys(videos)), list(dict.fromkeys(audios))
+
+def _tiktok_options(title: str, video_urls: list[str], audio_urls: list[str]) -> tuple[str, list[dict[str, Any]]]:
+    video_urls = list(dict.fromkeys(_remote_url(x) for x in video_urls if _remote_url(x)))
+    audio_urls = list(dict.fromkeys(_remote_url(x) for x in audio_urls if _remote_url(x)))
+    if not video_urls: raise RuntimeError("TikTok resolver returned no video URL.")
+    options=[]
+    heights=[2160,1440,1080,720,480,360]
+    for idx,url in enumerate(video_urls[:8]):
+        height=heights[min(idx,len(heights)-1)]
+        options.append({"url":url,"format":f"tiktok-{idx}","height":height,"size":0,"ext":"mp4","label":"Best MP4" if idx==0 else f"MP4 {height}p","title":title,"audio_url":audio_urls[0] if audio_urls else ""})
+    return title, options
+
+def _resolve_tikwm(source_url: str) -> tuple[str, list[dict[str, Any]]]:
+    endpoint=f"{TIKWM_ENDPOINT}?{urlencode({'url':source_url,'hd':'1'})}"
+    response=json_request(endpoint, timeout=45)
+    if not isinstance(response,dict) or response.get("code") not in {0,"0",None}: raise RuntimeError(str(response.get("msg") if isinstance(response,dict) else "") or "TikWM did not resolve this TikTok URL")
+    data=response.get("data") if isinstance(response,dict) else None
+    if not isinstance(data,dict): raise RuntimeError("TikWM returned no media data")
+    duration=int(data.get("duration") or 0)
+    if duration>MAX_VIDEO_SECONDS: raise RuntimeError(f"This video is {duration//60} minutes long. The service limit is {MAX_VIDEO_SECONDS//60} minutes.")
+    title=str(data.get("title") or "TikTok video")
+    videos,audios=_media_links(data)
+    preferred_video=[_remote_url(data.get(k)) for k in ("hdplay","play","wmplay") if _remote_url(data.get(k))]
+    preferred_audio=[_remote_url(data.get(k)) for k in ("music","music_url","mp3","audio") if _remote_url(data.get(k))]
+    return _tiktok_options(title,list(dict.fromkeys(preferred_video+videos)),list(dict.fromkeys(preferred_audio+audios)))
+
+def _resolve_snaptik(source_url: str) -> tuple[str, list[dict[str, Any]]]:
+    body=urlencode({"url":source_url}).encode()
+    _,_,raw=http_request(SNAPTIK_ENDPOINT,method="POST",payload=body,headers={"Content-Type":"application/x-www-form-urlencoded; charset=UTF-8","Referer":"https://snaptik.app/"},timeout=45,max_bytes=4*1024*1024)
+    try: response=json.loads(raw.decode("utf-8",errors="replace"))
+    except json.JSONDecodeError as error: raise RuntimeError("SnapTik returned invalid JSON") from error
+    if isinstance(response,dict) and response.get("success") is False: raise RuntimeError("SnapTik could not resolve this TikTok URL")
+    videos,audios=_media_links(response); title="TikTok video"
+    if isinstance(response,dict):
+        data=response.get("data")
+        title=str((data.get("title") if isinstance(data,dict) else response.get("title")) or title)
+    return _tiktok_options(title,videos,audios)
+
+def tiktok_info(source_url: str) -> tuple[str, list[dict[str, Any]]]:
+    errors=[]
+    for resolver in (_resolve_tikwm,_resolve_snaptik):
+        try: return resolver(source_url)
+        except Exception as error: errors.append(str(error))
+    raise RuntimeError("TikTok download APIs could not resolve this URL: " + " | ".join(errors)[:500])
+
 def _import_yt_dlp():
     try:
         import yt_dlp  # type: ignore
@@ -567,6 +635,8 @@ def _resolve_with_ytdlp(source_url: str, platform: Platform) -> tuple[str, list[
 
 
 def resolve_media(source_url: str, platform: Platform) -> tuple[str, list[dict[str, Any]]]:
+    if platform.key == "tiktok":
+        return tiktok_info(source_url)
     return _resolve_with_ytdlp(source_url, platform)
 
 
@@ -625,9 +695,19 @@ def send_download(
         title = str(option.get("title") or "download")
         extension = "mp3" if output_format == "mp3" else "mp4"
 
-        # MP3 requires actual audio extraction, so use yt-dlp locally for audio.
-        # MP4 uses the direct URL when possible; this avoids an unnecessary server copy.
-        if output_format == "mp4":
+        if output_format == "mp3" and str(option.get("platform_title", "")).lower() == "tiktok":
+            audio_url = option.get("audio_url")
+            if not isinstance(audio_url, str) or not audio_url.startswith(("http://", "https://")):
+                raise RuntimeError("এই TikTok video-এর direct audio URL পাওয়া যায়নি।")
+            caption=f"<b>{escape(title[:900])}</b>"
+            try:
+                telegram_call("sendAudio", {"chat_id":str(chat_id),"audio":audio_url,"caption":caption,"title":title[:200]})
+            except Exception:
+                update(0,0,"Server-এ audio download করা হচ্ছে…")
+                data=_download_bytes(audio_url)
+                update(len(data),len(data),"Telegram-এ audio upload করা হচ্ছে…")
+                telegram_upload("sendAudio","audio",safe_filename(title,"mp3"),data,{"chat_id":str(chat_id),"caption":caption,"title":title[:200]})
+        elif output_format == "mp4":
             known_size = int(option.get("size") or 0)
             if known_size and known_size > MAX_MEDIA_BYTES:
                 raise RuntimeError(
@@ -929,6 +1009,7 @@ def process_message(message: dict[str, Any]) -> None:
         CHAT_MODES[chat_id] = "home"
         with STATE_LOCK:
             DOWNLOAD_OPTIONS.pop(chat_id, None)
+            ACTIVE_CHATS.discard(chat_id)
         send_message(chat_id, "Cancelled. আবার শুরু করতে পারেন।", reply_markup=main_keyboard())
         return
     if command == "/download":
@@ -1036,6 +1117,7 @@ def process_callback(callback: dict[str, Any]) -> None:
         CHAT_MODES[chat_id] = "home"
         with STATE_LOCK:
             DOWNLOAD_OPTIONS.pop(chat_id, None)
+            ACTIVE_CHATS.discard(chat_id)
         edit_message(chat_id, message_id, "Cancelled. আবার শুরু করতে পারেন.", reply_markup=main_keyboard())
 
     elif data == "mode:download":
