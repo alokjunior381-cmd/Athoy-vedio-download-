@@ -421,6 +421,7 @@ def _tiktok_options(title: str, video_urls: list[str]) -> tuple[str, list[dict[s
             "size": 0,
             "ext": "mp4",
             "label": labels[min(index, len(labels) - 1)],
+            "method": "direct",
         })
     return title, options
 
@@ -475,14 +476,39 @@ def _resolve_snaptik(source_url: str) -> tuple[str, list[dict[str, Any]]]:
     return _tiktok_options(title, video_urls)
 
 
+def expand_tiktok_url(source_url: str) -> str:
+    # vt.tiktok.com / vm.tiktok.com are redirect links. The older API
+    # endpoints often reject the short URL, so resolve the redirect first.
+    parsed = urlparse(source_url)
+    host = (parsed.hostname or "").lower()
+    if host not in {"vt.tiktok.com", "vm.tiktok.com"}:
+        return source_url
+    request = Request(source_url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*"})
+    try:
+        with urlopen(request, timeout=20) as response:
+            final_url = response.geturl()
+            if final_url and "tiktok.com" in (urlparse(final_url).hostname or "").lower():
+                return final_url
+    except Exception as error:
+        log("TikTok short-link expansion failed: %s", error)
+    return source_url
+
+
 def tiktok_info(source_url: str) -> tuple[str, list[dict[str, Any]]]:
+    source_url = expand_tiktok_url(source_url)
     errors: list[str] = []
     for resolver in (_resolve_tikwm, _resolve_snaptik):
         try:
             return resolver(source_url)
         except Exception as error:
             errors.append(str(error))
-    raise RuntimeError("TikTok download APIs could not resolve this URL")
+    # Last fallback: current yt-dlp TikTok extractor. This still produces
+    # video-only output in the application; no audio-only mode exists.
+    try:
+        return _resolve_with_ytdlp(source_url, TIKTOK)
+    except Exception as error:
+        errors.append(str(error))
+    raise RuntimeError("TikTok video resolve করা যায়নি। TikTok APIs এবং yt-dlp—দুটোই এই URL resolve করতে পারেনি।")
 
 def _yt_dlp_options(source_url: str, format_selector: str | None = None) -> dict[str, Any]:
     # Video-only product: never request or convert to an audio-only output.
@@ -568,6 +594,7 @@ def _resolve_with_ytdlp(source_url: str, platform: Platform) -> tuple[str, list[
             "ext": "mp4",
             "label": f"{_option_label(h, 'mp4', 0)}",
             "title": title,
+            "method": "ytdlp",
         })
     return title, options
 
@@ -669,7 +696,7 @@ def send_download(chat_id: int, status_id: int, source_url: str, option: dict[st
         title = str(option.get("title") or "download")
         caption = f"<b>{escape(title[:900])}</b>\n\n🎬 MP4 video"
 
-        if platform_key == "tiktok":
+        if str(option.get("method") or "") == "direct":
             media_url = _remote_url(option.get("url"))
             if not media_url:
                 raise RuntimeError("TikTok selected video-এর media URL পাওয়া যায়নি।")
