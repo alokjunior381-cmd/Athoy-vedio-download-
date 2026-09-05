@@ -1,1 +1,1 @@
-yt-dlp[default]==2026.08.19
+# TikTok downloads use the direct TikWM and SnapTik HTTP APIs.
