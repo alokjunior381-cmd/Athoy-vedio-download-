@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import base64
@@ -44,6 +42,9 @@ MAX_MEDIA_BYTES = max(8, int(os.getenv("MAX_MEDIA_MB", "48"))) * 1024 * 1024
 MAX_VIDEO_SECONDS = max(60, int(os.getenv("MAX_VIDEO_MINUTES", "30"))) * 60
 STATE_TTL_SECONDS = 20 * 60
 MAX_TEXT_LENGTH = 3900
+
+# User tracking storage
+TOTAL_USERS: set[int] = set()
 
 
 @dataclass(frozen=True)
@@ -815,6 +816,11 @@ def process_message(message: dict[str, Any]) -> None:
     chat_id = chat.get("id")
     if chat_id is None:
         return
+
+    # Tracking user IDs
+    with STATE_LOCK:
+        TOTAL_USERS.add(chat_id)
+
     text = (message.get("text") or "").strip()
     first_name = (message.get("from") or {}).get("first_name", "")
     if not text:
@@ -822,6 +828,11 @@ def process_message(message: dict[str, Any]) -> None:
         return
 
     command = text.split(maxsplit=1)[0].lower()
+    if command == "/stats":
+        with STATE_LOCK:
+            count = len(TOTAL_USERS)
+        send_message(chat_id, f"📊 <b>মোট ইউজার সংখ্যা:</b> {count} জন")
+        return
     if command == "/start":
         CHAT_MODES[chat_id] = "home"
         send_message(chat_id, welcome_text(first_name), reply_markup=main_keyboard())
